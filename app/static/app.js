@@ -1,4 +1,4 @@
-import { DEFAULTS, activeBackend, loadModels, readPlates } from "./alpr.js";
+import { DEFAULTS, activeBackend, loadModels, modelsAreCached, readPlates } from "./alpr.js";
 import { PlateTracker } from "./tracker.js";
 import { RecentPlates, normalizeStored } from "./recent.js";
 
@@ -280,9 +280,17 @@ startButton.addEventListener("click", async () => {
   startButton.disabled = true;
   try {
     if (!activeBackend()) {
-      setStatus("Loading models (~10 MB, cached after first load)...");
+      // Say which it actually is, rather than claiming "cached after first
+      // load" and leaving a re-download indistinguishable from slow startup.
+      const cached = await modelsAreCached();
+      setStatus(cached ? "Loading models from cache..." : "Downloading models (~10 MB)...");
+      const started = performance.now();
       const backend = await loadModels(setStatus);
-      setStatus(`Models ready — running on ${backend}.`, "success");
+      const secs = ((performance.now() - started) / 1000).toFixed(1);
+      setStatus(
+        `Models ready in ${secs}s — ${cached ? "from cache" : "downloaded"}, running on ${backend}.`,
+        "success",
+      );
     }
     await startCamera();
     running = true;

@@ -99,6 +99,21 @@ export function activeBackend() {
 // Try WebGPU first, fall back to WASM. iOS Safari has shipped WebGPU since 17,
 // but it isn't guaranteed, and some ops can silently fall back — the caller
 // displays whichever backend actually loaded so slowness is explainable.
+/**
+ * Whether both models are already in the Cache API, i.e. whether the next
+ * load is a disk read or a ~10 MB download. Reported in the UI so "it's
+ * downloading every time" can be confirmed rather than inferred.
+ */
+export async function modelsAreCached() {
+  if (!self.caches) return false;
+  try {
+    const hits = await Promise.all([caches.match(DETECTOR_URL), caches.match(OCR_URL)]);
+    return hits.every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
 export async function loadModels(onProgress = () => {}) {
   const providers = [];
   if (navigator.gpu) providers.push("webgpu");

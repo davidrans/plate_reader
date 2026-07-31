@@ -150,6 +150,40 @@ confusable character can merge into one row. Box overlap prevents this while
 both are on screen together, but not across separate sightings. Widen
 `MERGE_DISTANCE` in `recent.js` to `0` to disable cross-sighting merging.
 
+## Caching (`app/static/sw.js`)
+
+Two caches, because the assets have opposite lifetimes:
+
+| Cache | Contents | Strategy | Bump when |
+|---|---|---|---|
+| `plate-reader-models-v1` | the two `.onnx` files (~10 MB) | cache-first | the model files change |
+| `plate-reader-shell-v3` | HTML, JS, manifest (a few KB) | **network-first** | never needs bumping |
+
+They were originally one cache-first cache, which had two bugs:
+
+1. Shipping new code required remembering to bump the version, or browsers kept
+   serving the old copy. The plate-photo release went out stale this way.
+2. `cache.add()` always hits the network, so **every service worker update
+   re-downloaded both models** — 10 MB to ship a few KB of changed JS.
+
+Network-first for the shell means a deploy can't go stale (the cache is only an
+offline fallback), and the separate model cache survives code deploys. The
+install step skips assets already cached, so an update re-fetches nothing it
+already has.
+
+The status line reports `from cache` vs `downloaded` plus a load time, so a
+suspected re-download can be confirmed instead of inferred.
+
+### iOS caveats
+
+- **Camera permission is re-prompted on most launches** of an installed PWA.
+  Each launch is a new browsing session as far as WebKit is concerned, and
+  there is no web-side fix — it's one of the native-vs-PWA gaps listed at the
+  top.
+- iOS can evict Cache Storage under storage pressure, so a re-download is
+  possible even when everything here is correct. The status line is how you
+  tell the difference.
+
 ## Commands
 
 ```bash
