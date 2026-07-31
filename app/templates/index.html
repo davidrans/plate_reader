@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Plate Reader</title>
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#212529" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Plate Reader" />
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+    crossorigin="anonymous"
+  />
+  <script>
+    (function () {
+      const saved = localStorage.getItem("plate-reader:theme");
+      const theme =
+        saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-bs-theme", theme);
+    })();
+  </script>
+  <style>
+    /* The only custom CSS in the app: Bootstrap has no primitive for stacking
+       a canvas exactly over a video element at matching intrinsic size. */
+    .camera-frame {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: #000;
+      border-radius: var(--bs-border-radius);
+      overflow: hidden;
+    }
+    .camera-frame > video,
+    .camera-frame > canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+  </style>
+</head>
+<body>
+  <main class="container py-3" style="max-width: 720px;">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <h1 class="h4 mb-0">Plate Reader</h1>
+      <button type="button" id="theme-toggle" class="btn btn-sm btn-outline-secondary">
+        <span id="theme-toggle-icon"></span> <span id="theme-toggle-label"></span>
+      </button>
+    </div>
+    <p class="text-body-secondary small">
+      Detection and OCR run entirely on this device — no image or plate is ever
+      uploaded.
+    </p>
+
+    <div id="status" class="alert alert-secondary py-2" hidden></div>
+
+    <div class="camera-frame mb-2">
+      <video id="camera" playsinline muted autoplay></video>
+      <canvas id="overlay"></canvas>
+    </div>
+
+    <div class="d-flex align-items-center gap-3 mb-4">
+      <button type="button" id="start-button" class="btn btn-primary">Start scanning</button>
+      <span id="fps" class="text-body-secondary small font-monospace"></span>
+    </div>
+
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <h2 class="h6 mb-0">Recent plates</h2>
+      <button type="button" id="clear-button" class="btn btn-sm btn-outline-danger" hidden>
+        Clear
+      </button>
+    </div>
+    <p id="empty-hint" class="text-body-secondary small">
+      Nothing yet — start scanning and point the camera at a plate.
+    </p>
+    <ul id="recent-list" class="list-group mb-4"></ul>
+  </main>
+
+  <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1080;">
+    <div
+      id="copy-toast"
+      class="toast align-items-center text-bg-success border-0"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div class="d-flex">
+        <div class="toast-body" id="copy-toast-body"></div>
+        <button
+          type="button"
+          class="btn-close btn-close-white me-2 m-auto"
+          data-bs-dismiss="toast"
+          aria-label="Close"
+        ></button>
+      </div>
+    </div>
+  </div>
+
+  <script
+    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+    integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+    crossorigin="anonymous"
+  ></script>
+  <!-- ORT must be a classic script (it sets window.ort) and must load before
+       the module that uses it. -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.webgpu.min.js"></script>
+  <script src="/static/theme.js"></script>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

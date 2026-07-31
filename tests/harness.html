@@ -1,0 +1,85 @@
+<!doctype html>
+<!--
+  Dev harness: runs the real alpr.js pipeline against the checked-in test
+  images, so the JS port can be checked against scripts/verify_models.py's
+  Python output without needing a camera or a phone.
+
+  Served at /static/../tests/harness.html only in local dev — see README.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ALPR harness</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.webgpu.min.js"></script>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 1.5rem; }
+    pre { background: #f4f4f5; padding: 1rem; border-radius: 6px; white-space: pre-wrap; }
+    img { max-width: 320px; border: 1px solid #ccc; margin-right: 1rem; vertical-align: top; }
+  </style>
+</head>
+<body>
+  <h1>ALPR pipeline harness</h1>
+  <div id="images"></div>
+  <pre id="out">running...</pre>
+
+  <script type="module">
+    import { DEFAULTS, activeBackend, loadModels, readPlates } from "/static/alpr.js";
+
+    const CASES = [
+      { file: "/tests/assets/zaz.jpg", expect: "AE6133CT", region: "Ukraine" },
+      { file: "/tests/assets/sgp.jpg", expect: "SDN7484U", region: "Singapore" },
+    ];
+
+    const out = document.getElementById("out");
+    const log = (m) => (out.textContent += m + "\n");
+
+    // createImageBitmap rather than <img>.decode(): Chrome defers image
+    // decoding in tabs that aren't foreground, which makes decode() hang
+    // indefinitely under automation. ImageBitmap skips the render pipeline
+    // and is a valid drawImage source, which is all alpr.js needs.
+    async function loadImage(src) {
+      const blob = await fetch(src).then((r) => r.blob());
+      const bmp = await createImageBitmap(blob);
+      const canvas = document.createElement("canvas");
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      canvas.getContext("2d").drawImage(bmp, 0, 0);
+      document.getElementById("images").append(canvas);
+      return bmp;
+    }
+
+    out.textContent = "";
+    try {
+      const backend = await loadModels((m) => log(m));
+      log(`backend: ${backend} (activeBackend=${activeBackend()})\n`);
+
+      let pass = 0;
+      for (const c of CASES) {
+        const img = await loadImage(c.file);
+        const t0 = performance.now();
+        const results = await readPlates(img, DEFAULTS);
+        const ms = (performance.now() - t0).toFixed(0);
+
+        log(`${c.file}  (${img.width}x${img.height})  ${ms} ms`);
+        if (!results.length) {
+          log(`  FAIL: no plate detected (expected ${c.expect})\n`);
+          continue;
+        }
+        for (const r of results) {
+          const ok = r.text === c.expect;
+          if (ok) pass++;
+          log(
+            `  ${ok ? "PASS" : "FAIL"} text=${r.text} (expected ${c.expect}) ` +
+              `det=${r.detScore.toFixed(3)} ocr=${r.confidence.toFixed(3)} ` +
+              `region=${r.region?.name} (expected ${c.region})`,
+          );
+        }
+        log("");
+      }
+      log(`=== ${pass}/${CASES.length} cases matched the Python reference ===`);
+    } catch (err) {
+      log(`ERROR: ${err.stack || err}`);
+    }
+  </script>
+</body>
+</html>
