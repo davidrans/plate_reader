@@ -168,11 +168,12 @@
         check("keeps highest-confidence crop", track.bestCrop?.id === "sharp", track.bestCrop?.id);
 
         const taken = track.takeCropIfChanged();
-        check("crop handed over once", taken?.id === "sharp");
+        check("crop handed over once", taken?.crop.id === "sharp");
+        check("crop carries its confidence", taken?.confidence === 0.98, `${taken?.confidence}`);
         check("not handed over again unchanged", track.takeCropIfChanged() === null);
 
         tracker.update([read("ABC123", 0.99, boxAt(10, 10), fakeCrop("sharpest"))], 400);
-        check("re-offered after improving", track.takeCropIfChanged()?.id === "sharpest");
+        check("re-offered after improving", track.takeCropIfChanged()?.crop.id === "sharpest");
       }
 
       log(`--- tracker: ${checks - failures}/${checks} checks passed ---\n`);
@@ -279,18 +280,28 @@
         check("uninformative region is not stored on the row", e.region === "", `"${e.region}"`);
       }
 
-      // An improved photo replaces the row's, but a frame that offers none
-      // must not wipe the picture already there.
+      // The row must keep the best photo of a plate ever seen, across separate
+      // sightings — a track's own quality bar resets, the row's must not.
       {
         const list = new RecentPlates();
         const track = { entryText: null };
         const base = { track, text: "ABC123", confidence: 0.9, region: null };
-        list.upsert({ ...base, image: "data:image/jpeg;base64,FIRST" }, 1000);
-        check("photo stored on the row", list.entries[0].image?.endsWith("FIRST"));
+        list.upsert({ ...base, image: "img:OK", imageConfidence: 0.80 }, 1000);
+        check("photo stored on the row", list.entries[0].image === "img:OK");
+
         list.upsert({ ...base, image: null }, 1100);
-        check("no photo offered does not clear it", list.entries[0].image?.endsWith("FIRST"));
-        list.upsert({ ...base, image: "data:image/jpeg;base64,BETTER" }, 1200);
-        check("better photo replaces it", list.entries[0].image?.endsWith("BETTER"));
+        check("no photo offered does not clear it", list.entries[0].image === "img:OK");
+
+        list.upsert({ ...base, image: "img:BETTER", imageConfidence: 0.97 }, 1200);
+        check("higher-quality photo replaces it", list.entries[0].image === "img:BETTER");
+
+        // A separate, later sighting that happened to be blurrier.
+        list.upsert(
+          { ...base, track: { entryText: null }, image: "img:WORSE", imageConfidence: 0.55 },
+          9000,
+        );
+        check("blurrier later sighting does not replace it", list.entries[0].image === "img:BETTER");
+        check("stored quality is tracked", list.entries[0].imageConfidence === 0.97);
       }
 
       // Rows saved before sighting counts existed must survive the upgrade.

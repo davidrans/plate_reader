@@ -104,11 +104,15 @@ class Track {
   /**
    * Hand over the best crop if it has improved since the last call, so the
    * caller can encode it once instead of on every frame.
+   *
+   * Returns the confidence alongside it: `bestCropConfidence` resets with each
+   * new track, so the row it is written to has to do its own comparison or a
+   * later, blurrier sighting would overwrite a good photo.
    */
   takeCropIfChanged() {
     if (!this.cropChanged) return null;
     this.cropChanged = false;
-    return this.bestCrop;
+    return { crop: this.bestCrop, confidence: this.bestCropConfidence };
   }
 
   addVote(result, now) {

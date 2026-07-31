@@ -66,7 +66,7 @@ export class RecentPlates {
    * @param track the tracker's Track — carries `entryText`, the row it owns
    * @returns the row that was written
    */
-  upsert({ track, text, confidence, region, image }, now = Date.now()) {
+  upsert({ track, text, confidence, region, image, imageConfidence = -1 }, now = Date.now()) {
     // "United States" is dropped along with "Unknown": with the US-only filter
     // on it's true of every row, so showing it conveys nothing. Note this is a
     // *country*, not a state — the model has no US-state classification.
@@ -104,6 +104,7 @@ export class RecentPlates {
           confidence,
           region: regionName,
           image: null,
+          imageConfidence: -1,
           count: 0,
           firstSeen: now,
           lastSeen: now,
@@ -118,9 +119,15 @@ export class RecentPlates {
     entry.lastSeen = now;
     entry.confidence = Math.max(entry.confidence, confidence);
     if (regionName) entry.region = regionName;
-    // The caller only supplies an image when it improved on the last one, so
-    // an absent image must never clear the picture already on the row.
-    if (image) entry.image = image;
+    // Keep the best photo of this plate ever seen, not the most recent one.
+    // The track's own "is this better?" check resets whenever a new track
+    // starts, so without comparing against what the row already holds, a later
+    // blurry sighting would replace a good picture. An absent image must never
+    // clear the existing one.
+    if (image && imageConfidence >= (entry.imageConfidence ?? -1)) {
+      entry.image = image;
+      entry.imageConfidence = imageConfidence;
+    }
 
     // Most recently seen plate floats to the top.
     this.entries = [entry, ...this.entries.filter((e) => e !== entry)].slice(0, this.limit);

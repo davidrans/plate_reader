@@ -19,21 +19,6 @@ const recentList = document.getElementById("recent-list");
 const emptyHint = document.getElementById("empty-hint");
 const clearButton = document.getElementById("clear-button");
 const fpsEl = document.getElementById("fps");
-const usOnlyToggle = document.getElementById("opt-us-only");
-
-// Persisted so the choice survives a reload — it's a tuning knob you'd want to
-// leave where you set it, same as the theme.
-const US_ONLY_KEY = "plate-reader:us-only";
-usOnlyToggle.checked = localStorage.getItem(US_ONLY_KEY) !== "false";
-usOnlyToggle.addEventListener("change", () => {
-  localStorage.setItem(US_ONLY_KEY, String(usOnlyToggle.checked));
-  // Reads already banked under the old setting shouldn't keep voting.
-  tracker.reset();
-});
-
-function currentOptions() {
-  return { ...DEFAULTS, allowedRegions: usOnlyToggle.checked ? DEFAULTS.allowedRegions : null };
-}
 
 let running = false;
 let stream = null;
@@ -163,9 +148,9 @@ function showToast(message) {
 // JPEG rather than PNG, and only when the track's best crop actually improved:
 // encoding is the expensive half, so doing it per frame would be wasteful.
 function upsertPlate(confirmedTrack) {
-  const crop = confirmedTrack.track.takeCropIfChanged();
-  const image = crop ? crop.toDataURL("image/jpeg", 0.7) : null;
-  recent.upsert({ ...confirmedTrack, image });
+  const best = confirmedTrack.track.takeCropIfChanged();
+  const image = best ? best.crop.toDataURL("image/jpeg", 0.7) : null;
+  recent.upsert({ ...confirmedTrack, image, imageConfidence: best?.confidence });
   saveRecent();
   renderRecent();
 }
@@ -243,7 +228,7 @@ async function loop() {
 
   while (running) {
     try {
-      const results = await readPlates(video, currentOptions());
+      const results = await readPlates(video, DEFAULTS);
       const { live, confirmed } = tracker.update(results);
       drawOverlay(live);
       for (const t of confirmed) upsertPlate(t);

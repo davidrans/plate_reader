@@ -73,7 +73,7 @@ The region head classifies **country**, not state: `"United States"` is a
 single one of its 66 classes. Nothing in this model stack can tell Colorado
 from Wyoming, and the whole upstream model zoo is country-level (Argentine /
 European / global). `"United States"` is hidden from rows because — with the
-US-only filter on — it is true of every row and carries no information.
+US-only filter always applied, it is true of every row and carries no information.
 
 Adding real state classification would mean a **separate model trained on US
 plate designs** (colours, logos, fonts) rather than their text: a dataset and
@@ -91,7 +91,9 @@ smoothing makes small text worse).
   small rather than becoming blur. Capped at 220 px wide.
 - The crop kept is the one from the **highest-confidence** frame, not the most
   recent — the pipeline is already voting across frames, so it may as well keep
-  the clearest view.
+  the clearest view. The quality bar lives on the row (`imageConfidence`), not
+  just the track: a track's own bar resets each sighting, so without it a later
+  blurry pass would overwrite a good photo.
 - Encoding is deferred: the tracker holds the winning crop as a canvas and
   `takeCropIfChanged()` hands it over only when it improves, so the JPEG encode
   doesn't run every frame.
@@ -110,7 +112,7 @@ Defaults in `alpr.js` (`DEFAULTS`), tuned against the real photos in
 | `detThreshold` | 0.5 | Real plates scored 0.87–0.998; junk rows scored <0.4. |
 | `ocrThreshold` | 0.6 | A plate too small to read scored 0.21; readable ones 1.000. Raised from 0.4 alongside voting — misread characters carry low confidence, so this drops most of them before they can vote. **Lower this first if distant plates stop registering.** |
 | `minPlateLength` | 4 | Junk boxes OCR to short garbage. |
-| `allowedRegions` | `["United States"]` | Used as a **misread detector**, not a nationality check — a garbled read of a US plate is usually classified confidently as another country. Toggleable in the UI ("US plates only"); set to `null` to accept every region, or add `"Unknown"` if real plates get skipped. |
+| `allowedRegions` | `["United States"]` | Used as a **misread detector**, not a nationality check — a garbled read of a US plate is usually classified confidently as another country. Set to `null` to accept every region, or add `"Unknown"` if real plates get skipped. |
 
 OCR confidence is the **minimum** across character slots, not the mean — one
 unreadable character should drag the score down rather than be averaged away
@@ -209,14 +211,14 @@ running, open <http://localhost:8000/tests/harness.html>.
 Current result on desktop Chrome (WASM fallback, no WebGPU):
 
 ```
---- tracker: 19/19 checks passed ---
---- recent:  40/40 cumulative checks passed ---
+--- tracker: 20/20 checks passed ---
+--- recent:  43/43 cumulative checks passed ---
 /tests/assets/zaz.jpg  (250x187)  213 ms
   PASS text=AE6133CT det=0.916 ocr=0.999 region=Ukraine
 /tests/assets/sgp.jpg  (899x226)  157 ms
   PASS text=SDN7484U det=0.998 ocr=1.000 region=Singapore
 === images: 2/2 matched the Python reference ===
-=== unit checks: 40/40 passed ===
+=== unit checks: 43/43 passed ===
 ```
 
 The `/tests` mount only exists when the directory is present; `tests/` and
