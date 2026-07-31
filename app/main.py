@@ -18,6 +18,13 @@ def index(request: Request):
     return templates.TemplateResponse(request, "index.html", {})
 
 
+# Same convention as court_date_api/crs_search_api. Cheaper for Coolify's
+# container health check than rendering the full page at "/".
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 # A service worker can only control pages at or below its own path, so it has
 # to be served from the root rather than /static. Same for the manifest, which
 # is fetched relative to the document.
