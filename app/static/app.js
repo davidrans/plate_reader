@@ -1,12 +1,14 @@
 import { DEFAULTS, activeBackend, loadModels, readPlates } from "./alpr.js";
+import { PlateTracker } from "./tracker.js";
+import { RecentPlates, normalizeStored } from "./recent.js";
 
 const RECENT_KEY = "plate-reader:recent";
-const RECENT_LIMIT = 50;
-// Holding the camera on one plate re-reads it many times a second. Suppress a
-// repeat of the same text within this window so the list doesn't fill up with
-// one plate — but still allow it later, since seeing the same car twice on
-// different occasions is legitimately worth recording.
-const DUPLICATE_WINDOW_MS = 10000;
+
+// Individual frames are never recorded directly: tracker.js pools each plate's
+// reads and votes on the text, and recent.js keeps one row per plate. A misread
+// in one frame therefore loses to the correct reading in the others.
+const tracker = new PlateTracker();
+const recent = new RecentPlates(loadRecent());
 
 const video = document.getElementById("camera");
 const overlay = document.getElementById("overlay");
@@ -20,14 +22,13 @@ const fpsEl = document.getElementById("fps");
 
 let running = false;
 let stream = null;
-let recent = loadRecent();
 
 // --- recent plates (client-side only; nothing is sent anywhere) ------------
 
 function loadRecent() {
   try {
     const raw = localStorage.getItem(RECENT_KEY);
-    return raw ? JSON.parse(raw) : [];
+    return normalizeStored(raw ? JSON.parse(raw) : []);
   } catch {
     return [];
   }
@@ -35,7 +36,7 @@ function loadRecent() {
 
 function saveRecent() {
   try {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+    localStorage.setItem(RECENT_KEY, JSON.stringify(recent.entries));
   } catch (err) {
     console.warn("[app] could not persist recent plates:", err);
   }
@@ -50,10 +51,10 @@ function relativeTime(ts) {
 }
 
 function renderRecent() {
-  emptyHint.hidden = recent.length > 0;
-  clearButton.hidden = recent.length === 0;
+  emptyHint.hidden = recent.entries.length > 0;
+  clearButton.hidden = recent.entries.length === 0;
   recentList.replaceChildren(
-    ...recent.map((entry) => {
+    ...recent.entries.map((entry) => {
       const li = document.createElement("li");
       li.className =
         "list-group-item d-flex justify-content-between align-items-center gap-2";
@@ -65,7 +66,8 @@ function renderRecent() {
       const meta = document.createElement("div");
       meta.className = "text-body-secondary small";
       meta.textContent = [
-        relativeTime(entry.ts),
+        entry.count > 1 ? `seen ${entry.count}×` : "",
+        relativeTime(entry.lastSeen),
         entry.region,
         `${Math.round(entry.confidence * 100)}%`,
       ]
@@ -99,50 +101,46 @@ function showToast(message) {
   }).show();
 }
 
-function recordPlate({ text, confidence, region }) {
-  const now = Date.now();
-  const last = recent[0];
-  if (last && last.text === text && now - last.ts < DUPLICATE_WINDOW_MS) {
-    last.ts = now;
-    last.confidence = Math.max(last.confidence, confidence);
-    saveRecent();
-    renderRecent();
-    return;
-  }
-  recent.unshift({
-    text,
-    confidence,
-    region: region?.name && region.name !== "Unknown" ? region.name : "",
-    ts: now,
-  });
-  recent = recent.slice(0, RECENT_LIMIT);
+// The list logic itself lives in recent.js (DOM-free, unit tested in the
+// harness) — this just persists and repaints after each write.
+function upsertPlate(confirmedTrack) {
+  recent.upsert(confirmedTrack);
   saveRecent();
   renderRecent();
 }
 
 clearButton.addEventListener("click", () => {
-  recent = [];
+  recent.clear();
+  // Release row ownership too, or a plate still in frame would keep updating
+  // the row it had before the list was cleared.
+  tracker.reset();
   saveRecent();
   renderRecent();
 });
 
 // --- camera + capture loop -------------------------------------------------
 
-function drawOverlay(results) {
+// Draws the live tracks rather than the raw per-frame reads: the voted leader
+// is stable, whereas a single frame's text flickers through misreads. Tracks
+// still gathering votes are drawn dimmer, so it's visible that a plate has
+// been spotted before it's confident enough to record.
+function drawOverlay(live) {
   if (overlay.width !== video.videoWidth || overlay.height !== video.videoHeight) {
     overlay.width = video.videoWidth;
     overlay.height = video.videoHeight;
   }
   overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
   overlayCtx.lineWidth = Math.max(2, overlay.width / 250);
-  overlayCtx.strokeStyle = "#20c997";
-  overlayCtx.fillStyle = "#20c997";
   overlayCtx.font = `${Math.max(16, overlay.width / 28)}px system-ui, sans-serif`;
   overlayCtx.textBaseline = "bottom";
 
-  for (const { text, box } of results) {
+  for (const { track, text, votes } of live) {
+    const confirmed = votes >= tracker.opts.minVotes;
+    overlayCtx.strokeStyle = confirmed ? "#20c997" : "#ffc107";
+    overlayCtx.fillStyle = confirmed ? "#20c997" : "#ffc107";
+    const { box } = track;
     overlayCtx.strokeRect(box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1);
-    overlayCtx.fillText(text, box.x1, Math.max(overlayCtx.font.length, box.y1 - 4));
+    overlayCtx.fillText(text, box.x1, Math.max(24, box.y1 - 4));
   }
 }
 
@@ -166,6 +164,9 @@ function stopCamera() {
   running = false;
   stream?.getTracks().forEach((t) => t.stop());
   stream = null;
+  // Drop in-flight tracks so restarting doesn't resume voting on plates that
+  // are no longer in view — and so the next sighting counts as a new one.
+  tracker.reset();
   overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
   startButton.textContent = "Start scanning";
   startButton.classList.replace("btn-danger", "btn-primary");
@@ -182,8 +183,9 @@ async function loop() {
   while (running) {
     try {
       const results = await readPlates(video, DEFAULTS);
-      drawOverlay(results);
-      for (const r of results) recordPlate(r);
+      const { live, confirmed } = tracker.update(results);
+      drawOverlay(live);
+      for (const t of confirmed) upsertPlate(t);
     } catch (err) {
       console.error("[app] inference failed:", err);
       setStatus(`Inference error: ${err.message}`, "danger");

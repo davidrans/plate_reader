@@ -75,7 +75,7 @@ Defaults in `alpr.js` (`DEFAULTS`), tuned against the real photos in
 | Setting | Value | Why |
 |---|---|---|
 | `detThreshold` | 0.5 | Real plates scored 0.87–0.998; junk rows scored <0.4. |
-| `ocrThreshold` | 0.4 | A plate too small to read scored 0.21; readable ones 1.000. |
+| `ocrThreshold` | 0.6 | A plate too small to read scored 0.21; readable ones 1.000. Raised from 0.4 alongside voting — misread characters carry low confidence, so this drops most of them before they can vote. **Lower this first if distant plates stop registering.** |
 | `minPlateLength` | 4 | Junk boxes OCR to short garbage. |
 
 OCR confidence is the **minimum** across character slots, not the mean — one
@@ -83,6 +83,38 @@ unreadable character should drag the score down rather than be averaged away
 by nine confident ones. There's deliberately no plate-format regex: it would
 wrongly reject vanity and non-US plates, and the model's alphabet already
 excludes punctuation.
+
+## Temporal voting (`app/static/tracker.js`, `app/static/recent.js`)
+
+A single frame's OCR is unreliable. Held on one plate the pipeline produces
+10–20 reads per couple of seconds — mostly correct, occasionally off by a
+character. Recording each frame directly filled the list with near-duplicates,
+so reads are pooled and voted on instead.
+
+- A **track** is one physical plate across frames. A detection joins a track if
+  its box overlaps the track's last box (IoU ≥ 0.3) **or** its text is within
+  ~2 edits. Each signal covers the other's failure: overlap survives a misread
+  that changes the text, text matching survives fast panning that breaks the
+  overlap.
+- Votes are **weighted by confidence**, so a shaky read can't outvote confident
+  ones. The winner is the highest total weight.
+- A track is committed to the list after `minVotes` (3) reads and **corrects
+  itself in place** if the leader changes while the plate is still in frame.
+  It's finalised once unmatched for `trackTimeoutMs` (1 s).
+- **One detection per track per frame.** Without this, two different cars whose
+  plates read alike would collapse into one track.
+- Character confusions OCR actually makes (`0OQD`, `1IL`, `5S`, `8B`, `2Z`,
+  `6G`) cost half a normal edit, so `ABCI23` merges into `ABC123` while a real
+  neighbour like `ABD123` stays separate.
+
+The list keeps **one row per plate** with a sighting count; re-seeing a plate
+bumps `count` and `lastSeen` instead of adding a row. The count increments once
+per *track*, not per frame.
+
+**Known trade-off:** two genuinely different plates differing only by a
+confusable character can merge into one row. Box overlap prevents this while
+both are on screen together, but not across separate sightings. Widen
+`MERGE_DISTANCE` in `recent.js` to `0` to disable cross-sighting merging.
 
 ## Commands
 
@@ -96,18 +128,27 @@ uv run python scripts/verify_models.py tests/assets/zaz.jpg tests/assets/sgp.jpg
 
 ### Test harness
 
-`tests/harness.html` runs the real `alpr.js` pipeline against the checked-in
-sample images and compares against the Python reference — no camera needed.
-With the server running, open <http://localhost:8000/tests/harness.html>.
+`tests/harness.html` covers both halves — no camera needed. With the server
+running, open <http://localhost:8000/tests/harness.html>.
 
-Current result on desktop Chrome (WASM fallback, no WebGPU): **2/2 exact
-matches**, 156–214 ms/frame.
+1. **Unit checks** for `tracker.js` and `recent.js`, driven by synthetic frame
+   sequences with injected timestamps (fully deterministic, no models loaded).
+   These encode the duplicate bug directly: 15 frames of one plate with a
+   misread in the middle must yield exactly one row with `count === 1`.
+2. **Image cases** running the real `alpr.js` pipeline against the checked-in
+   photos, compared against `scripts/verify_models.py`'s output.
+
+Current result on desktop Chrome (WASM fallback, no WebGPU):
 
 ```
-/tests/assets/zaz.jpg  (250x187)  214 ms
+--- tracker: 15/15 checks passed ---
+--- recent:  27/27 cumulative checks passed ---
+/tests/assets/zaz.jpg  (250x187)  213 ms
   PASS text=AE6133CT det=0.916 ocr=0.999 region=Ukraine
-/tests/assets/sgp.jpg  (899x226)  156 ms
+/tests/assets/sgp.jpg  (899x226)  157 ms
   PASS text=SDN7484U det=0.998 ocr=1.000 region=Singapore
+=== images: 2/2 matched the Python reference ===
+=== unit checks: 27/27 passed ===
 ```
 
 The `/tests` mount only exists when the directory is present; `tests/` and

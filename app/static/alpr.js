@@ -51,9 +51,13 @@ const REGIONS = [
 // scored 0.87-0.998 while junk rows scored below 0.4, so 0.5 separates them
 // with margin. OCR confidence is the *minimum* across slots — a plate too
 // small to actually read came back at 0.21 while readable ones hit 1.000.
+//
+// ocrThreshold was raised from 0.4 to 0.6 once temporal voting landed: misread
+// characters consistently carry low confidence, so this drops most of them
+// before they ever get a vote. Lower it if distant plates stop registering.
 export const DEFAULTS = {
   detThreshold: 0.5,
-  ocrThreshold: 0.4,
+  ocrThreshold: 0.6,
   minPlateLength: 4,
 };
 

@@ -24,6 +24,8 @@
 
   <script type="module">
     import { DEFAULTS, activeBackend, loadModels, readPlates } from "/static/alpr.js";
+    import { PlateTracker, confusionDistance, iou } from "/static/tracker.js";
+    import { RecentPlates, normalizeStored } from "/static/recent.js";
 
     const CASES = [
       { file: "/tests/assets/zaz.jpg", expect: "AE6133CT", region: "Ukraine" },
@@ -48,7 +50,203 @@
       return bmp;
     }
 
+    // --- tracker unit tests (deterministic, no models or camera needed) -----
+    //
+    // These simulate frames rather than running inference, so timestamps are
+    // injected and the results are exact. They cover the bug this was written
+    // for: one plate producing many rows because a misread broke the dedupe.
+
+    let checks = 0;
+    let failures = 0;
+
+    function check(name, condition, detail = "") {
+      checks++;
+      if (!condition) failures++;
+      log(`  ${condition ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`);
+    }
+
+    const boxAt = (x, y, w = 100, h = 40) => ({ x1: x, y1: y, x2: x + w, y2: y + h });
+    const read = (text, confidence, box) => ({ text, confidence, box, region: null });
+
+    function runTrackerTests() {
+      log("--- tracker unit tests ---");
+
+      // Confusable substitutions must be cheaper than genuine differences,
+      // otherwise "ABCI23" wouldn't merge into "ABC123" any more readily than
+      // a real neighbouring plate would.
+      const confusable = confusionDistance("ABC123", "ABCI23");
+      const genuine = confusionDistance("ABC123", "ABD123");
+      check("confusable < genuine difference", confusable < genuine, `${confusable} vs ${genuine}`);
+      check("identical strings distance 0", confusionDistance("ABC123", "ABC123") === 0);
+      check("iou of identical boxes is 1", iou(boxAt(0, 0), boxAt(0, 0)) === 1);
+      check("iou of disjoint boxes is 0", iou(boxAt(0, 0), boxAt(500, 500)) === 0);
+
+      // The original bug: 14 good reads and one misread of the SAME plate.
+      // Must yield one track whose leader is the majority reading.
+      {
+        const tracker = new PlateTracker();
+        let t = 0;
+        let last;
+        for (let i = 0; i < 15; i++) {
+          const r = i === 7 ? read("ABCI23", 0.55, boxAt(10, 10)) : read("ABC123", 0.95, boxAt(10, 10));
+          last = tracker.update([r], (t += 100));
+        }
+        check("misread does not spawn a second track", last.live.length === 1, `${last.live.length} tracks`);
+        check("majority reading wins the vote", last.live[0].text === "ABC123", last.live[0].text);
+        check("track is confirmed", last.confirmed.length === 1);
+      }
+
+      // Below minVotes a track must stay unconfirmed, so a single spurious
+      // frame never reaches the list.
+      {
+        const tracker = new PlateTracker();
+        const r = tracker.update([read("ZZ9999", 0.9, boxAt(10, 10))], 1000);
+        check("single frame is not yet confirmed", r.confirmed.length === 0);
+        check("but it is tracked", r.live.length === 1);
+      }
+
+      // Two plates on screen at once must stay independent — multi-plate
+      // scenes are supported and each gets its own vote tally.
+      {
+        const tracker = new PlateTracker();
+        let t = 0;
+        let last;
+        for (let i = 0; i < 4; i++) {
+          last = tracker.update(
+            [read("ABC123", 0.95, boxAt(10, 10)), read("XYZ789", 0.95, boxAt(400, 300))],
+            (t += 100),
+          );
+        }
+        check("two plates -> two tracks", last.live.length === 2, `${last.live.length}`);
+        check("both confirmed", last.confirmed.length === 2);
+        const texts = last.live.map((l) => l.text).sort();
+        check("both texts kept distinct", texts.join(",") === "ABC123,XYZ789", texts.join(","));
+      }
+
+      // Same text in two clearly separate places = two different cars. Box
+      // overlap has to keep them apart even though the text matches.
+      {
+        const tracker = new PlateTracker();
+        const r = tracker.update(
+          [read("ABC123", 0.95, boxAt(10, 10)), read("ABC123", 0.95, boxAt(600, 400))],
+          1000,
+        );
+        check("identical text at two positions -> two tracks", r.live.length === 2, `${r.live.length}`);
+      }
+
+      // A track must expire once its plate leaves view, so the next sighting
+      // is counted separately rather than continuing the old vote.
+      {
+        const tracker = new PlateTracker();
+        tracker.update([read("ABC123", 0.95, boxAt(10, 10))], 1000);
+        const gone = tracker.update([], 1000 + 1500);
+        check("track expires after timeout", gone.live.length === 0 && gone.expired.length === 1);
+      }
+
+      // Fast camera motion breaks box overlap; the text match must still hold
+      // the track together (this is why identity is "overlap OR text").
+      {
+        const tracker = new PlateTracker();
+        let t = 0;
+        let last;
+        for (let i = 0; i < 4; i++) {
+          last = tracker.update([read("ABC123", 0.95, boxAt(i * 300, i * 200))], (t += 100));
+        }
+        check("text match survives lost box overlap", last.live.length === 1, `${last.live.length}`);
+      }
+
+      log(`--- tracker: ${checks - failures}/${checks} checks passed ---\n`);
+    }
+
+    // --- recent-list tests -------------------------------------------------
+    //
+    // End-to-end over tracker + list: this is the combination the original bug
+    // lived in, so the cases mirror the reported symptom directly.
+
+    function feed(tracker, list, reads, { frames = 5, start = 1000, step = 100 } = {}) {
+      let t = start;
+      for (let i = 0; i < frames; i++) {
+        const { confirmed } = tracker.update(reads(i), (t += step));
+        for (const c of confirmed) list.upsert(c, t);
+      }
+      return t;
+    }
+
+    function runRecentTests() {
+      log("--- recent list tests ---");
+
+      // The reported bug: one plate held in frame, occasionally misread,
+      // producing a pile of near-duplicate rows. Must be exactly one row.
+      {
+        const tracker = new PlateTracker();
+        const list = new RecentPlates();
+        feed(tracker, list, (i) => [
+          i === 6 ? read("ABCI23", 0.62, boxAt(10, 10)) : read("ABC123", 0.95, boxAt(10, 10)),
+        ], { frames: 15 });
+        check("one plate -> one row", list.entries.length === 1, `${list.entries.length} rows`);
+        check("row holds the voted text", list.entries[0]?.text === "ABC123", list.entries[0]?.text);
+        check("counted as a single sighting", list.entries[0]?.count === 1, `count=${list.entries[0]?.count}`);
+      }
+
+      // Leaving and returning is a genuinely new sighting: still one row, but
+      // the count goes up.
+      {
+        const tracker = new PlateTracker();
+        const list = new RecentPlates();
+        const reads = () => [read("ABC123", 0.95, boxAt(10, 10))];
+        let t = feed(tracker, list, reads, { frames: 5, start: 1000 });
+        tracker.update([], t + 2000); // plate leaves view -> track expires
+        feed(tracker, list, reads, { frames: 5, start: t + 3000 });
+        check("re-sighting keeps one row", list.entries.length === 1, `${list.entries.length} rows`);
+        check("re-sighting bumps the count", list.entries[0]?.count === 2, `count=${list.entries[0]?.count}`);
+      }
+
+      // Two cars in frame at once must produce two independent rows.
+      {
+        const tracker = new PlateTracker();
+        const list = new RecentPlates();
+        feed(tracker, list, () => [
+          read("ABC123", 0.95, boxAt(10, 10)),
+          read("XYZ789", 0.95, boxAt(400, 300)),
+        ]);
+        check("two plates -> two rows", list.entries.length === 2, `${list.entries.length} rows`);
+        check("each counted once", list.entries.every((e) => e.count === 1));
+      }
+
+      // A separate later track settling on a confusable variant should merge
+      // into the existing row rather than adding a near-duplicate.
+      {
+        const list = new RecentPlates();
+        const trackA = { entryText: null };
+        const trackB = { entryText: null };
+        list.upsert({ track: trackA, text: "ABC123", confidence: 0.95, region: null }, 1000);
+        list.upsert({ track: trackB, text: "ABCI23", confidence: 0.9, region: null }, 5000);
+        check("confusable variant merges into existing row", list.entries.length === 1, `${list.entries.length} rows`);
+        check("established spelling is kept", list.entries[0]?.text === "ABC123", list.entries[0]?.text);
+      }
+
+      // ...but a genuinely different plate must not be merged away.
+      {
+        const list = new RecentPlates();
+        list.upsert({ track: { entryText: null }, text: "ABC123", confidence: 0.95, region: null }, 1000);
+        list.upsert({ track: { entryText: null }, text: "ABD123", confidence: 0.95, region: null }, 5000);
+        check("genuinely different plate stays separate", list.entries.length === 2, `${list.entries.length} rows`);
+      }
+
+      // Rows saved before sighting counts existed must survive the upgrade.
+      {
+        const migrated = normalizeStored([{ text: "OLD999", confidence: 0.9, region: "", ts: 42 }]);
+        check("legacy row migrates", migrated[0].count === 1 && migrated[0].lastSeen === 42);
+        check("normalizeStored tolerates junk", normalizeStored(null).length === 0);
+      }
+
+      log(`--- recent: ${checks - failures}/${checks} cumulative checks passed ---\n`);
+    }
+
     out.textContent = "";
+    runTrackerTests();
+    runRecentTests();
+
     try {
       const backend = await loadModels((m) => log(m));
       log(`backend: ${backend} (activeBackend=${activeBackend()})\n`);
@@ -76,7 +274,8 @@
         }
         log("");
       }
-      log(`=== ${pass}/${CASES.length} cases matched the Python reference ===`);
+      log(`=== images: ${pass}/${CASES.length} matched the Python reference ===`);
+      log(`=== unit checks: ${checks - failures}/${checks} passed ===`);
     } catch (err) {
       log(`ERROR: ${err.stack || err}`);
     }

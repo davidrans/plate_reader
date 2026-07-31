@@ -4,13 +4,15 @@
 // Bump CACHE when any cached asset changes; the activate handler deletes older
 // caches. The models are content-addressed by filename, so swapping a model
 // means a new filename and a cache bump.
-const CACHE = "plate-reader-v1";
+const CACHE = "plate-reader-v2";
 
 const ASSETS = [
   "/",
   "/manifest.json",
   "/static/app.js",
   "/static/alpr.js",
+  "/static/tracker.js",
+  "/static/recent.js",
   "/static/theme.js",
   "/static/models/yolo-v9-t-384-license-plates-end2end.onnx",
   "/static/models/cct_xs_v2_global.onnx",
