@@ -49,11 +49,23 @@ function loadRecent() {
   }
 }
 
+// Plate photos are base64 JPEGs and dominate the stored size, so localStorage's
+// ~5 MB quota is reachable. Rather than losing the whole list, drop the oldest
+// photos (keeping their text) until it fits.
 function saveRecent() {
-  try {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(recent.entries));
-  } catch (err) {
-    console.warn("[app] could not persist recent plates:", err);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(recent.entries));
+      return;
+    } catch (err) {
+      const oldestWithImage = [...recent.entries].reverse().find((e) => e.image);
+      if (!oldestWithImage) {
+        console.warn("[app] could not persist recent plates:", err);
+        return;
+      }
+      oldestWithImage.image = null;
+      if (attempt === 0) console.warn("[app] storage full — dropping oldest plate photos");
+    }
   }
 }
 
@@ -75,6 +87,23 @@ function renderRecent() {
         "list-group-item d-flex justify-content-between align-items-center gap-2";
 
       const left = document.createElement("div");
+      left.className = "d-flex align-items-center gap-3";
+
+      // The plate photo is how you read the state — no model here identifies
+      // it — and it doubles as a way to spot a wrong OCR result at a glance.
+      if (entry.image) {
+        const thumb = document.createElement("img");
+        thumb.src = entry.image;
+        thumb.alt = `Photo of plate ${entry.text}`;
+        thumb.className = "rounded border";
+        thumb.style.width = "110px";
+        thumb.style.objectFit = "contain";
+        thumb.addEventListener("click", () => showPlateImage(entry));
+        thumb.style.cursor = "zoom-in";
+        left.append(thumb);
+      }
+
+      const textWrap = document.createElement("div");
       const plate = document.createElement("div");
       plate.className = "font-monospace fs-5 fw-semibold";
       plate.textContent = entry.text;
@@ -88,7 +117,8 @@ function renderRecent() {
       ]
         .filter(Boolean)
         .join(" · ");
-      left.append(plate, meta);
+      textWrap.append(plate, meta);
+      left.append(textWrap);
 
       const copy = document.createElement("button");
       copy.type = "button";
@@ -100,6 +130,17 @@ function renderRecent() {
       return li;
     }),
   );
+}
+
+// Plate crops are often small; a distant one needs enlarging before a state
+// name is legible. image-rendering:pixelated keeps upscaled pixels crisp
+// rather than smearing them, which reads better for text.
+function showPlateImage(entry) {
+  const modalImage = document.getElementById("plate-modal-image");
+  modalImage.src = entry.image;
+  modalImage.alt = `Photo of plate ${entry.text}`;
+  document.getElementById("plate-modal-title").textContent = entry.text;
+  bootstrap.Modal.getOrCreateInstance(document.getElementById("plate-modal")).show();
 }
 
 function copyPlate(text) {
@@ -117,9 +158,14 @@ function showToast(message) {
 }
 
 // The list logic itself lives in recent.js (DOM-free, unit tested in the
-// harness) — this just persists and repaints after each write.
+// harness) — this handles the canvas encode, then persists and repaints.
+//
+// JPEG rather than PNG, and only when the track's best crop actually improved:
+// encoding is the expensive half, so doing it per frame would be wasteful.
 function upsertPlate(confirmedTrack) {
-  recent.upsert(confirmedTrack);
+  const crop = confirmedTrack.track.takeCropIfChanged();
+  const image = crop ? crop.toDataURL("image/jpeg", 0.7) : null;
+  recent.upsert({ ...confirmedTrack, image });
   saveRecent();
   renderRecent();
 }

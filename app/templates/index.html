@@ -43,6 +43,12 @@
       height: 100%;
       object-fit: cover;
     }
+    /* Plate crops are small and get upscaled when enlarged — keep the pixels
+       crisp instead of letting the browser smear them, which reads better. */
+    #plate-modal-image {
+      image-rendering: pixelated;
+      max-height: 60vh;
+    }
   </style>
 </head>
 <body>
@@ -90,6 +96,23 @@
     </p>
     <ul id="recent-list" class="list-group mb-4"></ul>
   </main>
+
+  <div class="modal fade" id="plate-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 class="modal-title h5 font-monospace" id="plate-modal-title"></h2>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body text-center">
+          <img id="plate-modal-image" alt="" class="img-fluid rounded border" />
+          <p class="text-body-secondary small mt-2 mb-0">
+            The state is readable here — no model in this app identifies it.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1080;">
     <div

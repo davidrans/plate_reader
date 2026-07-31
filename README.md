@@ -67,19 +67,38 @@ Python. **The two must agree**, so the non-obvious parts are worth stating:
   - Output `region` is `[N,66]` — country classification over `REGIONS` in
     `alpr.js`, which must stay 66 entries long and in the model's order.
 
-### There is no US-state identification
+### There is no US-state identification — the photo covers it instead
 
 The region head classifies **country**, not state: `"United States"` is a
 single one of its 66 classes. Nothing in this model stack can tell Colorado
 from Wyoming, and the whole upstream model zoo is country-level (Argentine /
-European / global). Rows therefore never show a state, and `"United States"`
-itself is hidden from the UI because — with the US-only filter on — it is true
-of every row and carries no information.
+European / global). `"United States"` is hidden from rows because — with the
+US-only filter on — it is true of every row and carries no information.
 
-Adding state identification would mean a **separate classifier trained on US
+Adding real state classification would mean a **separate model trained on US
 plate designs** (colours, logos, fonts) rather than their text: a dataset and
-training project, not a configuration change. No off-the-shelf permissively
-licensed model was found for it.
+training project, not a configuration change, and no off-the-shelf
+permissively licensed model was found for it.
+
+**So each row stores a cropped photo of the plate instead**, and you read the
+state off it directly. This is strictly more useful than a classifier would
+be: it also makes a wrong OCR result obvious at a glance. Tap the thumbnail to
+enlarge it (`image-rendering: pixelated`, since these crops get upscaled and
+smoothing makes small text worse).
+
+- `captureCrop()` in `alpr.js` preserves aspect ratio, unlike the OCR input
+  which is squashed to 128×64, and **never upscales** — a distant plate stays
+  small rather than becoming blur. Capped at 220 px wide.
+- The crop kept is the one from the **highest-confidence** frame, not the most
+  recent — the pipeline is already voting across frames, so it may as well keep
+  the clearest view.
+- Encoding is deferred: the tracker holds the winning crop as a canvas and
+  `takeCropIfChanged()` hands it over only when it improves, so the JPEG encode
+  doesn't run every frame.
+- ~5 KB per photo at quality 0.7, so a full 50-row list is ~250 KB — well
+  inside `localStorage`'s ~5 MB. If the quota is hit anyway, `saveRecent()`
+  drops the **oldest photos** (keeping their text) until it fits, rather than
+  losing the list.
 
 ### Thresholds
 
@@ -156,14 +175,14 @@ running, open <http://localhost:8000/tests/harness.html>.
 Current result on desktop Chrome (WASM fallback, no WebGPU):
 
 ```
---- tracker: 15/15 checks passed ---
---- recent:  33/33 cumulative checks passed ---
+--- tracker: 19/19 checks passed ---
+--- recent:  40/40 cumulative checks passed ---
 /tests/assets/zaz.jpg  (250x187)  213 ms
   PASS text=AE6133CT det=0.916 ocr=0.999 region=Ukraine
 /tests/assets/sgp.jpg  (899x226)  157 ms
   PASS text=SDN7484U det=0.998 ocr=1.000 region=Singapore
 === images: 2/2 matched the Python reference ===
-=== unit checks: 33/33 passed ===
+=== unit checks: 40/40 passed ===
 ```
 
 The `/tests` mount only exists when the directory is present; `tests/` and

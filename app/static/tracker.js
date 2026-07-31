@@ -92,7 +92,23 @@ class Track {
     // rename that row in place when the leader changes rather than adding a
     // second one. Null until the track has enough votes to be committed.
     this.entryText = null;
+    // Best-looking crop seen so far, kept so the row can show a picture of the
+    // plate. Held as a canvas and only encoded once the caller takes it —
+    // encoding every frame would be wasteful.
+    this.bestCrop = null;
+    this.bestCropConfidence = -1;
+    this.cropChanged = false;
     this.addVote(result, now);
+  }
+
+  /**
+   * Hand over the best crop if it has improved since the last call, so the
+   * caller can encode it once instead of on every frame.
+   */
+  takeCropIfChanged() {
+    if (!this.cropChanged) return null;
+    this.cropChanged = false;
+    return this.bestCrop;
   }
 
   addVote(result, now) {
@@ -106,6 +122,14 @@ class Track {
       vote.region = region ?? vote.region;
     }
     this.votes.set(text, vote);
+
+    // Keep the clearest view of the plate, not merely the most recent one.
+    if (result.crop && confidence > this.bestCropConfidence) {
+      this.bestCrop = result.crop;
+      this.bestCropConfidence = confidence;
+      this.cropChanged = true;
+    }
+
     this.box = result.box;
     this.lastSeen = now;
   }

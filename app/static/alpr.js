@@ -150,6 +150,24 @@ function fillOcrInput(source, box) {
   return new ort.Tensor("uint8", ocrData, [1, OCR_H, OCR_W, 3]);
 }
 
+// A viewable crop of the plate, kept alongside the text so the state (which no
+// model here can identify — see README) stays readable by eye, and so a wrong
+// OCR result is obvious at a glance.
+//
+// Aspect ratio is preserved, unlike the OCR input which is squashed to 128x64.
+// Never upscales: a distant plate stays small rather than being blown up into
+// blur, and CSS handles display size.
+export function captureCrop(source, box, maxWidth = 220) {
+  const w = Math.max(1, box.x2 - box.x1);
+  const h = Math.max(1, box.y2 - box.y1);
+  const scale = Math.min(1, maxWidth / w);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(w * scale));
+  canvas.height = Math.max(1, Math.round(h * scale));
+  canvas.getContext("2d").drawImage(source, box.x1, box.y1, w, h, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
 function decodeDetections(output, sourceWidth, sourceHeight, threshold) {
   const rows = output.dims[0];
   const stride = output.dims[1]; // 7
@@ -253,7 +271,10 @@ export async function readPlates(source, options = {}) {
     const ocrOut = await ocrSession.run({ [OCR_INPUT]: fillOcrInput(source, box) });
     const { text, confidence, region } = decodePlate(ocrOut.plate, ocrOut.region);
     if (!isPlausible(text, confidence, region, opts)) continue;
-    results.push({ text, confidence, region, box, detScore: box.score });
+    // Cheap (a drawImage into a <=220px canvas); the expensive JPEG encode is
+    // deferred until a crop is actually kept as a track's best.
+    const crop = opts.captureCrops === false ? null : captureCrop(source, box);
+    results.push({ text, confidence, region, box, crop, detScore: box.score });
   }
   return results;
 }

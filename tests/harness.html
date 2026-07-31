@@ -66,7 +66,9 @@
     }
 
     const boxAt = (x, y, w = 100, h = 40) => ({ x1: x, y1: y, x2: x + w, y2: y + h });
-    const read = (text, confidence, box) => ({ text, confidence, box, region: null });
+    const read = (text, confidence, box, crop = null) => ({ text, confidence, box, region: null, crop });
+    // Stand-in for a crop canvas — the tracker only stores and hands it back.
+    const fakeCrop = (id) => ({ id });
 
     function runTrackerTests() {
       log("--- tracker unit tests ---");
@@ -153,6 +155,24 @@
           last = tracker.update([read("ABC123", 0.95, boxAt(i * 300, i * 200))], (t += 100));
         }
         check("text match survives lost box overlap", last.live.length === 1, `${last.live.length}`);
+      }
+
+      // The stored photo should be the clearest view of the plate, not merely
+      // the most recent frame — that's what makes the state readable.
+      {
+        const tracker = new PlateTracker();
+        tracker.update([read("ABC123", 0.70, boxAt(10, 10), fakeCrop("blurry"))], 100);
+        tracker.update([read("ABC123", 0.98, boxAt(10, 10), fakeCrop("sharp"))], 200);
+        tracker.update([read("ABC123", 0.75, boxAt(10, 10), fakeCrop("later-blurry"))], 300);
+        const track = tracker.tracks[0];
+        check("keeps highest-confidence crop", track.bestCrop?.id === "sharp", track.bestCrop?.id);
+
+        const taken = track.takeCropIfChanged();
+        check("crop handed over once", taken?.id === "sharp");
+        check("not handed over again unchanged", track.takeCropIfChanged() === null);
+
+        tracker.update([read("ABC123", 0.99, boxAt(10, 10), fakeCrop("sharpest"))], 400);
+        check("re-offered after improving", track.takeCropIfChanged()?.id === "sharpest");
       }
 
       log(`--- tracker: ${checks - failures}/${checks} checks passed ---\n`);
@@ -257,6 +277,20 @@
           1000,
         );
         check("uninformative region is not stored on the row", e.region === "", `"${e.region}"`);
+      }
+
+      // An improved photo replaces the row's, but a frame that offers none
+      // must not wipe the picture already there.
+      {
+        const list = new RecentPlates();
+        const track = { entryText: null };
+        const base = { track, text: "ABC123", confidence: 0.9, region: null };
+        list.upsert({ ...base, image: "data:image/jpeg;base64,FIRST" }, 1000);
+        check("photo stored on the row", list.entries[0].image?.endsWith("FIRST"));
+        list.upsert({ ...base, image: null }, 1100);
+        check("no photo offered does not clear it", list.entries[0].image?.endsWith("FIRST"));
+        list.upsert({ ...base, image: "data:image/jpeg;base64,BETTER" }, 1200);
+        check("better photo replaces it", list.entries[0].image?.endsWith("BETTER"));
       }
 
       // Rows saved before sighting counts existed must survive the upgrade.
