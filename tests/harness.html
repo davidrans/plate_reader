@@ -23,7 +23,7 @@
   <pre id="out">running...</pre>
 
   <script type="module">
-    import { DEFAULTS, activeBackend, loadModels, readPlates } from "/static/alpr.js";
+    import { DEFAULTS, activeBackend, isPlausible, loadModels, readPlates } from "/static/alpr.js";
     import { PlateTracker, confusionDistance, iou } from "/static/tracker.js";
     import { RecentPlates, normalizeStored } from "/static/recent.js";
 
@@ -233,6 +233,32 @@
         check("genuinely different plate stays separate", list.entries.length === 2, `${list.entries.length} rows`);
       }
 
+      // The region filter treats a non-US classification as a misread signal.
+      {
+        const us = { name: "United States", confidence: 0.9 };
+        const br = { name: "Brazil", confidence: 0.9 };
+        check("US plate accepted", isPlausible("ABC123", 0.9, us, DEFAULTS));
+        check("non-US read rejected as misread", !isPlausible("ABC123", 0.9, br, DEFAULTS));
+        check(
+          "filter off accepts any region",
+          isPlausible("ABC123", 0.9, br, { ...DEFAULTS, allowedRegions: null }),
+        );
+        check("short text still rejected", !isPlausible("AB", 0.9, us, DEFAULTS));
+        check("low confidence still rejected", !isPlausible("ABC123", 0.2, us, DEFAULTS));
+      }
+
+      // "United States" must not be shown as a row label: it's a country, not
+      // a state, and with the filter on it's true of every row.
+      {
+        const list = new RecentPlates();
+        const e = list.upsert(
+          { track: { entryText: null }, text: "ABC123", confidence: 0.9,
+            region: { name: "United States", confidence: 0.9 } },
+          1000,
+        );
+        check("uninformative region is not stored on the row", e.region === "", `"${e.region}"`);
+      }
+
       // Rows saved before sighting counts existed must survive the upgrade.
       {
         const migrated = normalizeStored([{ text: "OLD999", confidence: 0.9, region: "", ts: 42 }]);
@@ -255,7 +281,9 @@
       for (const c of CASES) {
         const img = await loadImage(c.file);
         const t0 = performance.now();
-        const results = await readPlates(img, DEFAULTS);
+        // allowedRegions off: these reference plates are Ukrainian and
+        // Singaporean, so the app's US-only default would reject them.
+        const results = await readPlates(img, { ...DEFAULTS, allowedRegions: null });
         const ms = (performance.now() - t0).toFixed(0);
 
         log(`${c.file}  (${img.width}x${img.height})  ${ms} ms`);

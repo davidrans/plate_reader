@@ -19,6 +19,11 @@ export const RECENT_LIMIT = 50;
 // catches a later, separate track settling on a slightly different reading.
 export const MERGE_DISTANCE = 0.5;
 
+// Region values not worth showing in a row. The model classifies *country*,
+// not US state, so with the US-only filter on every row would read "United
+// States" — noise rather than information.
+const UNINFORMATIVE_REGIONS = new Set(["Unknown", "United States"]);
+
 /**
  * Bring stored rows up to the current shape. Entries written before sighting
  * counts existed only had `ts`, and must not be discarded.
@@ -62,7 +67,10 @@ export class RecentPlates {
    * @returns the row that was written
    */
   upsert({ track, text, confidence, region }, now = Date.now()) {
-    const regionName = region?.name && region.name !== "Unknown" ? region.name : "";
+    // "United States" is dropped along with "Unknown": with the US-only filter
+    // on it's true of every row, so showing it conveys nothing. Note this is a
+    // *country*, not a state — the model has no US-state classification.
+    const regionName = region?.name && !UNINFORMATIVE_REGIONS.has(region.name) ? region.name : "";
     let entry = track.entryText ? this.find(track.entryText) : null;
 
     if (entry && entry.text !== text) {

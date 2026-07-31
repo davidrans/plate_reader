@@ -55,10 +55,17 @@ const REGIONS = [
 // ocrThreshold was raised from 0.4 to 0.6 once temporal voting landed: misread
 // characters consistently carry low confidence, so this drops most of them
 // before they ever get a vote. Lower it if distant plates stop registering.
+// `allowedRegions` uses the region head as a misread detector rather than as
+// information: a garbled reading of a US plate tends to be confidently
+// classified as some other country (Brazil is a common one), so anything not
+// classified United States is more likely a bad read than a foreign car.
+// Set to null to accept every region. Add "Unknown" to the list if legitimate
+// plates start getting dropped.
 export const DEFAULTS = {
   detThreshold: 0.5,
   ocrThreshold: 0.6,
   minPlateLength: 4,
+  allowedRegions: ["United States"],
 };
 
 const MODEL_BASE = "/static/models";
@@ -211,10 +218,17 @@ function decodePlate(plateTensor, regionTensor) {
 
 // Junk boxes reliably OCR to short garbage, so length is the cheapest useful
 // filter. Real plates are alphanumeric by construction (the alphabet has no
-// punctuation), so length + confidence is enough — no format regex, which
-// would wrongly reject vanity and non-US plates.
-function isPlausible(text, confidence, opts) {
-  return text.length >= opts.minPlateLength && confidence >= opts.ocrThreshold;
+// punctuation), so length + confidence covers the rest — no format regex,
+// which would wrongly reject vanity plates.
+//
+// The region check is a second misread signal, not a nationality check: see
+// DEFAULTS.allowedRegions. A read rejected here never reaches the tracker, so
+// it can't vote.
+export function isPlausible(text, confidence, region, opts) {
+  if (text.length < opts.minPlateLength) return false;
+  if (confidence < opts.ocrThreshold) return false;
+  if (opts.allowedRegions && region && !opts.allowedRegions.includes(region.name)) return false;
+  return true;
 }
 
 /**
@@ -238,7 +252,7 @@ export async function readPlates(source, options = {}) {
     if (box.x2 <= box.x1 || box.y2 <= box.y1) continue;
     const ocrOut = await ocrSession.run({ [OCR_INPUT]: fillOcrInput(source, box) });
     const { text, confidence, region } = decodePlate(ocrOut.plate, ocrOut.region);
-    if (!isPlausible(text, confidence, opts)) continue;
+    if (!isPlausible(text, confidence, region, opts)) continue;
     results.push({ text, confidence, region, box, detScore: box.score });
   }
   return results;

@@ -65,9 +65,18 @@
       <canvas id="overlay"></canvas>
     </div>
 
-    <div class="d-flex align-items-center gap-3 mb-4">
+    <div class="d-flex align-items-center gap-3 mb-2">
       <button type="button" id="start-button" class="btn btn-primary">Start scanning</button>
       <span id="fps" class="text-body-secondary small font-monospace"></span>
+    </div>
+
+    <div class="form-check mb-4">
+      <input class="form-check-input" type="checkbox" id="opt-us-only" checked />
+      <label class="form-check-label small text-body-secondary" for="opt-us-only">
+        US plates only — a garbled read is usually classified as another
+        country, so this drops most misreads. Uncheck if real plates are being
+        skipped.
+      </label>
     </div>
 
     <div class="d-flex justify-content-between align-items-center mb-2">
